@@ -170,15 +170,17 @@ abstract class GetOperation {
 
   /**
    * Set the exception associated with this operation.
-   * A {@link ServerErrorCode#Blob_Deleted} or {@link ServerErrorCode#Blob_Expired} error overrides any other
-   * previously received exception.
+   * A {@link ServerErrorCode#Blob_Deleted} or {@link ServerErrorCode#Blob_Expired} or
+   * {@link ServerErrorCode#Blob_Authorization_Failure}
+   * error overrides any other previously received exception.
    * @param exception the {@link RouterException} to possibly set.
    */
   void setOperationException(Exception exception) {
     if (exception instanceof RouterException) {
       RouterErrorCode routerErrorCode = ((RouterException) exception).getErrorCode();
       if (operationException.get() == null || routerErrorCode == RouterErrorCode.BlobDeleted
-          || routerErrorCode == RouterErrorCode.BlobExpired) {
+          || routerErrorCode == RouterErrorCode.BlobExpired
+          || routerErrorCode == RouterErrorCode.BlobAuthorizationFailure) {
         operationException.set(exception);
       }
     } else {

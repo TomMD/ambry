@@ -23,6 +23,7 @@ public enum ServerErrorCode {
   No_Error,
   IO_Error,
   Blob_Not_Found,
+  Blob_Authorization_Failure,
   Blob_Deleted,
   Blob_Expired,
   Blob_Already_Exists,
