@@ -20,6 +20,8 @@ import com.github.ambry.clustermap.MockDataNodeId;
 import com.github.ambry.clustermap.MockPartitionId;
 import com.github.ambry.clustermap.MockReplicaId;
 import com.github.ambry.clustermap.ReplicaId;
+import com.github.ambry.config.RouterConfig;
+import com.github.ambry.config.VerifiableProperties;
 import com.github.ambry.network.Port;
 import com.github.ambry.network.PortType;
 import com.github.ambry.utils.MockTime;
@@ -31,6 +33,7 @@ import java.util.HashSet;
 import java.util.Iterator;
 import java.util.LinkedList;
 import java.util.List;
+import java.util.Properties;
 import java.util.Set;
 import org.junit.Test;
 import org.junit.runner.RunWith;
@@ -65,6 +68,7 @@ public class OperationTrackerTest {
   private List<MockDataNodeId> datanodes;
   private MockPartitionId mockPartition;
   private String localDcName;
+  private String originatingDcName;
   private final LinkedList<ReplicaId> inflightReplicas = new LinkedList<>();
   private final Set<ReplicaId> repetitionTracker = new HashSet<>();
 
@@ -104,7 +108,7 @@ public class OperationTrackerTest {
   @Test
   public void localSucceedTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(false, 2, 3);
+    OperationTracker ot = getOperationTracker(false, 2, 3, true, Integer.MAX_VALUE);
     // 3-0-0-0; 9-0-0-0
     assertFalse("Operation should not have been done.", ot.isDone());
     sendRequests(ot, 3, false);
@@ -134,7 +138,7 @@ public class OperationTrackerTest {
   @Test
   public void localFailTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(false, 2, 3);
+    OperationTracker ot = getOperationTracker(false, 2, 3, true, Integer.MAX_VALUE);
     // 3-0-0-0; 9-0-0-0
     assertFalse("Operation should not have been done.", ot.isDone());
     sendRequests(ot, 3, false);
@@ -164,7 +168,7 @@ public class OperationTrackerTest {
   @Test
   public void localSucceedWithDifferentParameterTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(true, 1, 2, true, Integer.MAX_VALUE);
     // 3-0-0-0; 9-0-0-0
     sendRequests(ot, 2, false);
     // 1-2-0-0; 9-0-0-0
@@ -202,7 +206,7 @@ public class OperationTrackerTest {
   @Test
   public void remoteReplicaTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(true, 1, 2, true, Integer.MAX_VALUE);
     // 3-0-0-0; 9-0-0-0
     sendRequests(ot, 2, false);
     // 1-2-0-0; 9-0-0-0
@@ -254,7 +258,7 @@ public class OperationTrackerTest {
   @Test
   public void fullSuccessTargetTest() {
     initialize();
-    OperationTracker ot = getOperationTracker(true, 12, 3);
+    OperationTracker ot = getOperationTracker(true, 12, 3, true, Integer.MAX_VALUE);
     while (!ot.hasSucceeded()) {
       sendRequests(ot, 3, false);
       for (int i = 0; i < 3; i++) {
@@ -289,7 +293,7 @@ public class OperationTrackerTest {
     mockPartition = new MockPartitionId();
     populateReplicaList(replicaCount);
     localDcName = datanodes.get(0).getDatacenterName();
-    OperationTracker ot = getOperationTracker(true, 1, 2);
+    OperationTracker ot = getOperationTracker(true, 1, 2, true, Integer.MAX_VALUE);
     sendRequests(ot, 2, true);
     ot.onResponse(inflightReplicas.poll(), false);
     ot.onResponse(inflightReplicas.poll(), false);
@@ -324,13 +328,99 @@ public class OperationTrackerTest {
   }
 
   /**
+   * Test to ensure that replicas in originating DC are first priority when originating DC is local DC.
+   */
+  @Test
+  public void replicasOrderingTestOriginatingIsLocal() {
+    initialize();
+    originatingDcName = localDcName;
+    RouterConfig routerConfig = getRouterConfig(localDcName, "true", "3", "3", "false", "6");
+    OperationTracker ot =
+        getOperationTracker(routerConfig.routerGetCrossDcEnabled, routerConfig.routerDeleteSuccessTarget,
+            routerConfig.routerGetRequestParallelism, routerConfig.routerGetIncludeNonOriginatingDcReplicas,
+            routerConfig.routerGetReplicasRequired);
+    sendRequests(ot, 3, false);
+    for (int i = 0; i < 3; i++) {
+      ReplicaId replica = inflightReplicas.poll();
+      ot.onResponse(replica, true);
+      assertEquals("Should be originating DC", originatingDcName, replica.getDataNodeId().getDatacenterName());
+    }
+    assertEquals("Should have 0 replica in flight.", 0, inflightReplicas.size());
+    assertTrue("Operation should have succeeded", ot.hasSucceeded());
+    assertTrue("Operation should be done", ot.isDone());
+  }
+
+  /**
+   * Test to ensure that replicas in originating DC are right after local DC replicas.
+   */
+  @Test
+  public void replicasOrderingTestOriginatingNotLocal() {
+    initialize();
+    originatingDcName = datanodes.get(datanodes.size() - 1).getDatacenterName();
+    RouterConfig routerConfig = getRouterConfig(localDcName, "true", "3", "6", "false", "6");
+    OperationTracker ot =
+        getOperationTracker(routerConfig.routerGetCrossDcEnabled, routerConfig.routerDeleteSuccessTarget,
+            routerConfig.routerGetRequestParallelism, routerConfig.routerGetIncludeNonOriginatingDcReplicas,
+            routerConfig.routerGetReplicasRequired);
+    sendRequests(ot, 6, false);
+    for (int i = 0; i < 3; i++) {
+      ReplicaId replica = inflightReplicas.poll();
+      ot.onResponse(replica, false); // fail first 3 requests to local
+      assertEquals("Should be local DC", localDcName, replica.getDataNodeId().getDatacenterName());
+    }
+    assertFalse("Operation should have not succeeded", ot.hasSucceeded());
+
+    for (int i = 0; i < 3; i++) {
+      ReplicaId replica = inflightReplicas.poll();
+      ot.onResponse(replica, true);
+      assertEquals("Should be originating DC", originatingDcName, replica.getDataNodeId().getDatacenterName());
+    }
+    assertEquals("Should have 0 replica in flight.", 0, inflightReplicas.size());
+    assertTrue("Operation should have succeeded", ot.hasSucceeded());
+    assertTrue("Operation should be done", ot.isDone());
+  }
+
+  /**
+   * Test to ensure that replicas are exactly 6 when includeNonOriginatingDcReplicas is false.
+   * 3 local replicas in the beginning and 3 originating replicas afterwards.
+   */
+  @Test
+  public void replicasOrderTestOriginatingDcOnly() {
+    initialize();
+    originatingDcName = datanodes.get(datanodes.size() - 1).getDatacenterName();
+    System.out.println(originatingDcName);
+    RouterConfig routerConfig = getRouterConfig(localDcName, "true", "3", "9", "false", "6");
+    OperationTracker ot =
+        getOperationTracker(routerConfig.routerGetCrossDcEnabled, routerConfig.routerDeleteSuccessTarget,
+            routerConfig.routerGetRequestParallelism, routerConfig.routerGetIncludeNonOriginatingDcReplicas,
+            routerConfig.routerGetReplicasRequired);
+    sendRequests(ot, 6, false);
+    assertEquals("Should have 6 replicas", 6, inflightReplicas.size());
+    for (int i = 0; i < 3; i++) {
+      ReplicaId replica = inflightReplicas.poll();
+      ot.onResponse(replica, false); // fail first 3 requests to local replicas
+      assertEquals("Should be local DC", localDcName, replica.getDataNodeId().getDatacenterName());
+    }
+    assertFalse("Operation should have not succeeded", ot.hasSucceeded());
+
+    for (int i = 0; i < 3; i++) {
+      ReplicaId replica = inflightReplicas.poll();
+      ot.onResponse(replica, true);
+      assertEquals("Should be originating DC", originatingDcName, replica.getDataNodeId().getDatacenterName());
+    }
+    assertEquals("Should have 0 replica in flight.", 0, inflightReplicas.size());
+    assertTrue("Operation should have succeeded", ot.hasSucceeded());
+    assertTrue("Operation should be done", ot.isDone());
+  }
+
+  /**
    * Tests the case when the success target > number of replicas.
    */
   @Test
   public void notEnoughReplicasToMeetTargetTest() {
     initialize();
     try {
-      getOperationTracker(true, 13, 3);
+      getOperationTracker(true, 13, 3, true, Integer.MAX_VALUE);
       fail("Should have failed to construct tracker because success target > replica count");
     } catch (IllegalArgumentException e) {
       // expected. Nothing to do.
@@ -345,7 +435,7 @@ public class OperationTrackerTest {
     initialize();
     for (int parallelism : Arrays.asList(0, -1)) {
       try {
-        getOperationTracker(true, 13, 0);
+        getOperationTracker(true, 13, 0, true, Integer.MAX_VALUE);
         fail("Should have failed to construct tracker because parallelism is " + parallelism);
       } catch (IllegalArgumentException e) {
         // expected. Nothing to do.
@@ -384,18 +474,22 @@ public class OperationTrackerTest {
    * @param crossColoEnabled {@code true} if cross colo needs to be enabled. {@code false} otherwise.
    * @param successTarget the number of successful responses required for the operation to succeed.
    * @param parallelism the number of parallel requests that can be in flight.
+   * @param includeNonOriginatingDcReplicas if take the option to include remote non originating DC replicas.
+   * @param replicasRequired The number of replicas required for the operation.
    * @return the right {@link OperationTracker} based on {@link #operationTrackerType}.
    */
-  private OperationTracker getOperationTracker(boolean crossColoEnabled, int successTarget, int parallelism) {
+  private OperationTracker getOperationTracker(boolean crossColoEnabled, int successTarget, int parallelism,
+      boolean includeNonOriginatingDcReplicas, int replicasRequired) {
     OperationTracker tracker;
     switch (operationTrackerType) {
       case SIMPLE_OP_TRACKER:
-        tracker = new SimpleOperationTracker(localDcName, mockPartition, crossColoEnabled, successTarget, parallelism);
+        tracker = new SimpleOperationTracker(localDcName, mockPartition, crossColoEnabled, originatingDcName,
+            includeNonOriginatingDcReplicas, replicasRequired, successTarget, parallelism);
         break;
       case ADAPTIVE_OP_TRACKER:
-        tracker =
-            new AdaptiveOperationTracker(localDcName, mockPartition, crossColoEnabled, successTarget, parallelism, time,
-                localColoTracker, crossColoEnabled ? crossColoTracker : null, pastDueCounter, QUANTILE);
+        tracker = new AdaptiveOperationTracker(localDcName, mockPartition, crossColoEnabled, originatingDcName,
+            includeNonOriginatingDcReplicas, replicasRequired, successTarget, parallelism, time, localColoTracker,
+            crossColoEnabled ? crossColoTracker : null, pastDueCounter, QUANTILE);
         break;
       default:
         throw new IllegalArgumentException("Unrecognized operation tracker type - " + operationTrackerType);
@@ -449,7 +543,7 @@ public class OperationTrackerTest {
       ((MockReplicaId) mockReplicaIds.get(i)).markReplicaDownStatus(downStatus.get(i));
     }
     localDcName = datanodes.get(0).getDatacenterName();
-    OperationTracker ot = getOperationTracker(true, 2, 3);
+    OperationTracker ot = getOperationTracker(true, 2, 3, true, Integer.MAX_VALUE);
     // The iterator should return all replicas, with the first half being the up replicas
     // and the last half being the down replicas.
     Iterator<ReplicaId> itr = ot.getReplicaIterator();
@@ -464,5 +558,31 @@ public class OperationTrackerTest {
       count++;
     }
     assertEquals("Total replica count did not match expected", totalReplicaCount, count);
+  }
+
+  /**
+   * Helper function to generate {@link RouterConfig}
+   * @param datacenterName
+   * @param crossColoEnabled Whether get operations are allowed to make requests to nodes in remote data centers
+   * @param successTarget The minimum number of successful responses required for a get operation on a chunk
+   * @param parallelism The maximum number of parallel requests issued at a time by the get manager for a get operation
+   *                    on a chunk.
+   * @param includeNonOriginatingDcReplicas  whether get operations are allowed to make requests to nodes in
+   *                                         non-originating remote data centers
+   * @param replicasRequired Number of replicas required for GET OperationTracker when
+   *                         routerGetIncludeNonOriginatingDcReplicas is False
+   */
+  private RouterConfig getRouterConfig(String datacenterName, String crossColoEnabled, String successTarget,
+      String parallelism, String includeNonOriginatingDcReplicas, String replicasRequired) {
+    Properties properties = new Properties();
+    properties.setProperty("router.hostname", "localhost");
+    properties.setProperty("router.datacenter.name", datacenterName);
+    properties.setProperty("router.get.cross.dc.enabled", crossColoEnabled);
+    properties.setProperty("router.get.success.target", successTarget);
+    properties.setProperty("router.get.request.parallelism", parallelism);
+    properties.setProperty("router.get.include.non.originating.dc.replicas", includeNonOriginatingDcReplicas);
+    properties.setProperty("router.get.replicas.required", replicasRequired);
+    RouterConfig routerConfig = new RouterConfig(new VerifiableProperties(properties));
+    return routerConfig;
   }
 }
