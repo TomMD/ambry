@@ -60,6 +60,8 @@ import org.junit.Test;
 import org.junit.runner.RunWith;
 import org.junit.runners.Parameterized;
 
+import static com.github.ambry.router.CryptoJobHandlerTest.*;
+
 
 /**
  * Class to test the {@link NonBlockingRouter}
@@ -123,7 +125,8 @@ public class NonBlockingRouterTest {
     singleKeyForKMS = TestUtils.getRandomKey(SingleKeyManagementServiceTest.DEFAULT_KEY_SIZE_CHARS);
     kms = new SingleKeyManagementService(new KMSConfig(vProps), singleKeyForKMS);
     cryptoService = new GCMCryptoService(new CryptoServiceConfig(vProps));
-    cryptoJobHandler = new CryptoJobHandler(CryptoJobHandlerTest.DEFAULT_THREAD_COUNT);
+    cryptoJobHandler =
+        new CryptoJobHandler(CryptoJobHandlerTest.DEFAULT_THREAD_COUNT, DEFAULT_CRYPTO_JOB_TIMEOUT_MS, mockTime);
   }
 
   @After
@@ -661,7 +664,8 @@ public class NonBlockingRouterTest {
     NetworkClient networkClient =
         new MockNetworkClientFactory(verifiableProperties, mockSelectorState, MAX_PORTS_PLAIN_TEXT, MAX_PORTS_SSL,
             CHECKOUT_TIMEOUT_MS, mockServerLayout, mockTime).getNetworkClient();
-    cryptoJobHandler = new CryptoJobHandler(CryptoJobHandlerTest.DEFAULT_THREAD_COUNT);
+    cryptoJobHandler =
+        new CryptoJobHandler(CryptoJobHandlerTest.DEFAULT_THREAD_COUNT, DEFAULT_CRYPTO_JOB_TIMEOUT_MS, mockTime);
     KeyManagementService localKMS = new MockKeyManagementService(new KMSConfig(verifiableProperties), singleKeyForKMS);
     putManager = new PutManager(mockClusterMap, mockResponseHandler, new LoggingNotificationSystem(),
         new RouterConfig(verifiableProperties), new NonBlockingRouterMetrics(mockClusterMap),

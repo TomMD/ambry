@@ -13,11 +13,16 @@
  */
 package com.github.ambry.router;
 
+import com.github.ambry.utils.Pair;
+import com.github.ambry.utils.Time;
 import java.io.Closeable;
 import java.security.GeneralSecurityException;
 import java.util.List;
+import java.util.concurrent.BlockingQueue;
 import java.util.concurrent.ExecutorService;
 import java.util.concurrent.Executors;
+import java.util.concurrent.LinkedBlockingQueue;
+import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.slf4j.Logger;
 import org.slf4j.LoggerFactory;
@@ -30,28 +35,60 @@ import org.slf4j.LoggerFactory;
  * and any new jobs submitted after close will be ignored.
  */
 class CryptoJobHandler implements Closeable {
+  private final long cryptoJobTimeoutMs;
   private final AtomicBoolean enabled = new AtomicBoolean(false);
   private static final GeneralSecurityException CLOSED_EXCEPTION =
       new GeneralSecurityException("CryptoJobHandler closed");
-  private ExecutorService scheduler;
+  private static final GeneralSecurityException CRYPTO_JOB_TIMEOUT_EXCEPTION =
+      new GeneralSecurityException("CryptoJob timeout", new TimeoutException());
+  private final ExecutorService executor;
+  private final BlockingQueue<Pair<CryptoJob, Long>> pendingCryptoJobs = new LinkedBlockingQueue<>();
+  private final Time time;
 
   private static final Logger logger = LoggerFactory.getLogger(CryptoJobHandler.class);
 
   /**
    * Instantiates {@link CryptoJobHandler}
+   * @param threadCount total number of worker threads
+   * @param cryptoJobTimeoutMs crypto job timeout in ms
+   * @param time {@link Time} instance to use
    */
-  CryptoJobHandler(int threadCount) {
+  CryptoJobHandler(int threadCount, long cryptoJobTimeoutMs, Time time) {
+    this.cryptoJobTimeoutMs = cryptoJobTimeoutMs;
     enabled.set(true);
-    scheduler = Executors.newFixedThreadPool(threadCount);
+    executor = Executors.newFixedThreadPool(threadCount);
+    this.time = time;
+  }
+
+  /**
+   * Cleans up expired crypto jobs
+   */
+  protected void cleanUpExpiredCryptoJobs() {
+    Pair<CryptoJob, Long> pendingCryptoJob = pendingCryptoJobs.peek();
+    while (pendingCryptoJob != null) {
+      if (pendingCryptoJob.getFirst().isComplete()) {
+        // already completed job
+        pendingCryptoJobs.poll();
+      } else if (time.milliseconds() - pendingCryptoJob.getSecond() > cryptoJobTimeoutMs) {
+        // crypto job timed out
+        pendingCryptoJobs.poll();
+        pendingCryptoJob.getFirst().completeJob(null, CRYPTO_JOB_TIMEOUT_EXCEPTION);
+      } else {
+        break;
+      }
+      pendingCryptoJob = pendingCryptoJobs.peek();
+    }
   }
 
   /**
    * Submits new job to the {@link CryptoJobHandler}
    * @param cryptoJob the {@link CryptoJob} that needs to be executed
    */
+
   void submitJob(CryptoJob cryptoJob) {
     if (enabled.get()) {
-      scheduler.execute(cryptoJob);
+      executor.execute(cryptoJob);
+      pendingCryptoJobs.add(new Pair(cryptoJob, time.milliseconds()));
     }
   }
 
@@ -61,10 +98,10 @@ class CryptoJobHandler implements Closeable {
    */
   public void close() {
     if (enabled.compareAndSet(true, false)) {
-      List<Runnable> pendingTasks = scheduler.shutdownNow();
+      List<Runnable> pendingTasks = executor.shutdownNow();
       for (Runnable task : pendingTasks) {
         if (task instanceof CryptoJob) {
-          ((CryptoJob) task).closeJob(CLOSED_EXCEPTION);
+          ((CryptoJob) task).completeJob(null, CLOSED_EXCEPTION);
         } else {
           logger.error("Unknown type of job seen : " + task.getClass());
         }
