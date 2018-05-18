@@ -14,22 +14,23 @@
 package com.github.ambry.router;
 
 import java.nio.ByteBuffer;
-import java.security.GeneralSecurityException;
+import java.util.concurrent.atomic.AtomicBoolean;
 
 
 /**
  * Class representing an Encrypt Job
  */
-public class EncryptJob implements CryptoJob {
+public class EncryptJob implements CryptoJob<EncryptJob.EncryptJobResult> {
   private final short accountId;
   private final short containerId;
   private final ByteBuffer blobContentToEncrypt;
   private final ByteBuffer userMetadataToEncrypt;
   private final Object perBlobKey;
-  private final Callback<EncryptJobResult> callback;
   private final CryptoService cryptoService;
   private final KeyManagementService kms;
   private final CryptoJobMetricsTracker encryptJobMetricsTracker;
+  private final AtomicBoolean callbackInvoked = new AtomicBoolean(false);
+  private Callback<EncryptJobResult> callback;
 
   /**
    * Instantiates {@link EncryptJob} for an upload.
@@ -44,15 +45,34 @@ public class EncryptJob implements CryptoJob {
   EncryptJob(short accountId, short containerId, ByteBuffer blobContentToEncrypt, ByteBuffer userMetadataToEncrypt,
       Object perBlobKey, CryptoService cryptoService, KeyManagementService kms,
       CryptoJobMetricsTracker encryptJobMetricsTracker, Callback<EncryptJobResult> callback) {
+    this.callback = callback;
     this.accountId = accountId;
     this.containerId = containerId;
     this.blobContentToEncrypt = blobContentToEncrypt;
     this.userMetadataToEncrypt = userMetadataToEncrypt;
     this.perBlobKey = perBlobKey;
-    this.callback = callback;
     this.cryptoService = cryptoService;
     this.kms = kms;
     this.encryptJobMetricsTracker = encryptJobMetricsTracker;
+  }
+
+  /**
+   * @return {@code true} if the job is complete. {@code false} otherwise
+   */
+  public boolean isComplete() {
+    return callbackInvoked.get();
+  }
+
+  /**
+   * Completes the job by invoking the callback with the result or exception
+   * @param result the result that needs to be set in the callback. Could be {@code null}
+   * @param e {@link Exception} to be set in the callback. Could be {@link null}
+   */
+  public void completeJob(EncryptJobResult result, Exception e) {
+    if (callbackInvoked.compareAndSet(false, true)) {
+      callback.onCompletion(result, e);
+      callback = null;
+    }
   }
 
   /**
@@ -65,36 +85,32 @@ public class EncryptJob implements CryptoJob {
    */
   @Override
   public void run() {
-    encryptJobMetricsTracker.onJobProcessingStart();
-    ByteBuffer encryptedBlobContent = null;
-    ByteBuffer encryptedUserMetadata = null;
-    ByteBuffer encryptedKey = null;
-    Exception exception = null;
-    try {
-      if (blobContentToEncrypt != null) {
-        encryptedBlobContent = cryptoService.encrypt(blobContentToEncrypt, perBlobKey);
+    if (!isComplete()) {
+      encryptJobMetricsTracker.onJobProcessingStart();
+      ByteBuffer encryptedBlobContent = null;
+      ByteBuffer encryptedUserMetadata = null;
+      ByteBuffer encryptedKey = null;
+      Exception exception = null;
+      if (!isComplete()) {
+        try {
+          if (blobContentToEncrypt != null) {
+            encryptedBlobContent = cryptoService.encrypt(blobContentToEncrypt, perBlobKey);
+          }
+          if (userMetadataToEncrypt != null) {
+            encryptedUserMetadata = cryptoService.encrypt(userMetadataToEncrypt, perBlobKey);
+          }
+          Object containerKey = kms.getKey(accountId, containerId);
+          encryptedKey = cryptoService.encryptKey(perBlobKey, containerKey);
+        } catch (Exception e) {
+          exception = e;
+        } finally {
+          encryptJobMetricsTracker.onJobProcessingComplete();
+          completeJob(
+              exception == null ? new EncryptJobResult(encryptedKey, encryptedBlobContent, encryptedUserMetadata)
+                  : null, exception);
+        }
       }
-      if (userMetadataToEncrypt != null) {
-        encryptedUserMetadata = cryptoService.encrypt(userMetadataToEncrypt, perBlobKey);
-      }
-      Object containerKey = kms.getKey(accountId, containerId);
-      encryptedKey = cryptoService.encryptKey(perBlobKey, containerKey);
-    } catch (Exception e) {
-      exception = e;
-    } finally {
-      encryptJobMetricsTracker.onJobProcessingComplete();
-      callback.onCompletion(
-          exception == null ? new EncryptJobResult(encryptedKey, encryptedBlobContent, encryptedUserMetadata) : null,
-          exception);
     }
-  }
-
-  /**
-   * Close the job with the given {@code gse}
-   * @param gse the {@link GeneralSecurityException} that needs to be set while invoking callback for the job
-   */
-  public void closeJob(GeneralSecurityException gse) {
-    callback.onCompletion(null, gse);
   }
 
   /**
