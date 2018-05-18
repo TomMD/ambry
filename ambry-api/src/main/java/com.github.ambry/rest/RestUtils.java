@@ -217,7 +217,12 @@ public class RestUtils {
      * "replicas" here means the string representation of all the replicas (i.e. host:port/path) where the blob might
      * reside.
      */
-    Replicas
+    Replicas,
+
+    /**
+     * All Chunk IDs of a composite blob ID returned as content (Admin only).
+     */
+    BlobChunkIds
   }
 
   public static final class MultipartPost {
@@ -418,9 +423,16 @@ public class RestUtils {
     if (subResource != null && rangeHeaderValue != null) {
       throw new RestServiceException("Ranges not supported for sub-resources.", RestServiceErrorCode.InvalidArgs);
     }
-    return new GetBlobOptionsBuilder().operationType(
-        subResource == null ? GetBlobOptions.OperationType.All : GetBlobOptions.OperationType.BlobInfo)
-        .getOption(getOption)
+    GetBlobOptions.OperationType operationType = null;
+    if (subResource == null) {
+      operationType = GetBlobOptions.OperationType.All;
+    } else if (subResource == SubResource.BlobChunkIds) {
+      // maybe operationtype.Data is better?
+      operationType = GetBlobOptions.OperationType.BlobChunkIds;
+    } else {
+      operationType = GetBlobOptions.OperationType.BlobInfo;
+    }
+    return new GetBlobOptionsBuilder().operationType(operationType).getOption(getOption)
         .range(rangeHeaderValue != null ? RestUtils.buildByteRange(rangeHeaderValue) : null)
         .build();
   }
