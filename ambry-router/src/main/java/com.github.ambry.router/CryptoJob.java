@@ -13,16 +13,20 @@
  */
 package com.github.ambry.router;
 
-import java.security.GeneralSecurityException;
-
-
 /**
  * CryptoJob representing the job that needs processing by {@link CryptoJobHandler}
  */
-public interface CryptoJob extends Runnable {
+public interface CryptoJob<T> extends Runnable {
+
   /**
-   * Close the job with the given {@code gse}
-   * @param gse the {@link GeneralSecurityException} that needs to be set while invoking callback for the job
+   * @return {@code true} if the job is complete. {@code false} otherwise
    */
-  void closeJob(GeneralSecurityException gse);
+  boolean isComplete();
+
+  /**
+   * Completes the job by invoking the callback with the result or exception
+   * @param result the result that needs to be set in the callback. Could be {@code null}
+   * @param e {@link Exception} to be set in the callback. Could be {@code null}
+   */
+  void completeJob(T result, Exception e);
 }
