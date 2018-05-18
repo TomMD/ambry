@@ -61,6 +61,9 @@ public enum RouterErrorCode {
 
   // Errors on read path. May occur for getBlobInfo, getBlob or deleteBlob operations.
   /**
+   * ContainerId or AccountId from blobId doesn't match these in store server.
+   */
+  BlobAuthorizationFailure, /**
    * Blob has been deleted and so cannot be retrieved.
    */
   BlobDeleted, /**
