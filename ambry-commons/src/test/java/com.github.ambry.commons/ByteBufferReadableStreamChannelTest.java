@@ -16,10 +16,13 @@ package com.github.ambry.commons;
 import com.github.ambry.router.AsyncWritableChannel;
 import com.github.ambry.router.Callback;
 import com.github.ambry.router.FutureResult;
+import com.github.ambry.utils.TestUtils;
 import com.github.ambry.utils.Utils;
 import java.io.IOException;
 import java.nio.ByteBuffer;
 import java.nio.channels.ClosedChannelException;
+import java.util.Arrays;
+import java.util.List;
 import java.util.Random;
 import java.util.concurrent.CountDownLatch;
 import java.util.concurrent.ExecutionException;
@@ -28,6 +31,8 @@ import java.util.concurrent.TimeUnit;
 import java.util.concurrent.TimeoutException;
 import java.util.concurrent.atomic.AtomicBoolean;
 import org.junit.Test;
+import org.junit.runner.RunWith;
+import org.junit.runners.Parameterized;
 
 import static org.junit.Assert.*;
 
@@ -35,26 +40,50 @@ import static org.junit.Assert.*;
 /**
  * Tests functionality of {@link ByteBufferReadableStreamChannel}.
  */
+@RunWith(Parameterized.class)
 public class ByteBufferReadableStreamChannelTest {
+  public static final int BUFFER_SIZE = 256;
+
+  private ByteBuffer contentWrapper;
+  private ByteBufferReadableStreamChannel byteBufferReadableStreamChannel;
+
+  public ByteBufferReadableStreamChannelTest(List<ByteBuffer> bufferList) {
+    if (bufferList.size() == 1) {
+      byteBufferReadableStreamChannel = new ByteBufferReadableStreamChannel(bufferList.get(0));
+    } else {
+      byteBufferReadableStreamChannel = new ByteBufferReadableStreamChannel(bufferList);
+    }
+    contentWrapper = ByteBuffer.allocate((int) byteBufferReadableStreamChannel.getSize());
+    for (ByteBuffer buffer: bufferList) {
+      contentWrapper.put(buffer.duplicate());
+    }
+    contentWrapper.rewind();
+  }
+
+  @Parameterized.Parameters
+  public static List<Object[]> data() {
+    // @formatter:off
+    return Arrays.asList(new Object[][] {
+      {Arrays.asList(ByteBuffer.wrap(TestUtils.getRandomBytes(BUFFER_SIZE)))},
+      {Arrays.asList(ByteBuffer.wrap(TestUtils.getRandomBytes(BUFFER_SIZE)), ByteBuffer.wrap(TestUtils.getRandomBytes(BUFFER_SIZE)))}
+    });
+    // @formatter:on
+  }
 
   /**
    * Tests the common case read operations i.e
-   * 1. Create {@link ByteBufferReadableStreamChannel} with random bytes.
-   * 2. Calls the different read operations of {@link ByteBufferReadableStreamChannel} and checks that the data read
+   * Calls the different read operations of {@link ByteBufferReadableStreamChannel} and checks that the data read
    * matches the data used to create the {@link ByteBufferReadableStreamChannel}.
    * @throws Exception
    */
   @Test
   public void commonCaseTest() throws Exception {
-    ByteBuffer content = ByteBuffer.wrap(fillRandomBytes(new byte[1024]));
-    ByteBufferReadableStreamChannel readableStreamChannel = new ByteBufferReadableStreamChannel(content);
-    assertTrue("ByteBufferReadableStreamChannel is not open", readableStreamChannel.isOpen());
-    assertEquals("Size returned by ByteBufferReadableStreamChannel did not match source array size", content.capacity(),
-        readableStreamChannel.getSize());
+    assertTrue("ByteBufferReadableStreamChannel is not open", byteBufferReadableStreamChannel.isOpen());
+    assertEquals("Size returned by ByteBufferReadableStreamChannel did not match source array size",
+        contentWrapper.capacity(), byteBufferReadableStreamChannel.getSize());
     ByteBufferAsyncWritableChannel writeChannel = new ByteBufferAsyncWritableChannel();
     ReadIntoCallback callback = new ReadIntoCallback();
-    Future<Long> future = readableStreamChannel.readInto(writeChannel, callback);
-    ByteBuffer contentWrapper = ByteBuffer.wrap(content.array());
+    Future<Long> future = byteBufferReadableStreamChannel.readInto(writeChannel, callback);
     while (contentWrapper.hasRemaining()) {
       ByteBuffer recvdContent = writeChannel.getNextChunk();
       assertNotNull("Written content lesser than original content", recvdContent);
@@ -71,24 +100,21 @@ public class ByteBufferReadableStreamChannelTest {
       throw callback.exception;
     }
     long futureBytesRead = future.get();
-    assertEquals("Total bytes written does not match (callback)", content.limit(), callback.bytesRead);
-    assertEquals("Total bytes written does not match (future)", content.limit(), futureBytesRead);
+    assertEquals("Total bytes written does not match (callback)", contentWrapper.capacity(), callback.bytesRead);
+    assertEquals("Total bytes written does not match (future)", contentWrapper.capacity(), futureBytesRead);
   }
 
   /**
-   * Tests that the right exceptions are thrown when reading into {@link AsyncWritableChannel} fails.
+   * Tests that the right exceptions are thrown when {@link AsyncWritableChannel} write fails.
    * @throws Exception
    */
   @Test
   public void readIntoAWCFailureTest() throws Exception {
     String errMsg = "@@ExpectedExceptionMessage@@";
-    byte[] in = fillRandomBytes(new byte[1]);
-
     // Bad AWC.
-    ByteBufferReadableStreamChannel readableStreamChannel = new ByteBufferReadableStreamChannel(ByteBuffer.wrap(in));
     ReadIntoCallback callback = new ReadIntoCallback();
     try {
-      readableStreamChannel.readInto(new BadAsyncWritableChannel(new IOException(errMsg)), callback).get();
+      byteBufferReadableStreamChannel.readInto(new BadAsyncWritableChannel(new IOException(errMsg)), callback).get();
       fail("Should have failed because BadAsyncWritableChannel would have thrown exception");
     } catch (ExecutionException e) {
       Exception exception = (Exception) Utils.getRootCause(e);
@@ -96,25 +122,37 @@ public class ByteBufferReadableStreamChannelTest {
       callback.awaitCallback();
       assertEquals("Exception message does not match expected (callback)", errMsg, callback.exception.getMessage());
     }
+  }
 
+  /**
+   * Tests that the right exceptions are thrown when reading more than once from {@link ByteBufferReadableStreamChannel}
+   * @throws Exception
+   */
+  @Test
+  public void readMoreThanOnceTest() throws Exception {
     // Reading more than once.
-    readableStreamChannel = new ByteBufferReadableStreamChannel(ByteBuffer.wrap(in));
     ByteBufferAsyncWritableChannel writeChannel = new ByteBufferAsyncWritableChannel();
-    readableStreamChannel.readInto(writeChannel, null);
+    byteBufferReadableStreamChannel.readInto(writeChannel, null);
     try {
-      readableStreamChannel.readInto(writeChannel, null);
+      byteBufferReadableStreamChannel.readInto(writeChannel, null);
       fail("Should have failed because readInto cannot be called more than once");
     } catch (IllegalStateException e) {
       // expected. Nothing to do.
     }
+  }
 
+  /**
+   * Tests that the right exceptions are trying to read after a {@link ByteBufferReadableStreamChannel} is closed.
+   * @throws Exception
+   */
+  @Test
+  public void readAfterCloseTest() throws Exception {
     // Read after close.
-    readableStreamChannel = new ByteBufferReadableStreamChannel(ByteBuffer.wrap(in));
-    readableStreamChannel.close();
-    writeChannel = new ByteBufferAsyncWritableChannel();
-    callback = new ReadIntoCallback();
+    byteBufferReadableStreamChannel.close();
+    ByteBufferAsyncWritableChannel writeChannel = new ByteBufferAsyncWritableChannel();
+    ReadIntoCallback callback = new ReadIntoCallback();
     try {
-      readableStreamChannel.readInto(writeChannel, callback).get();
+      byteBufferReadableStreamChannel.readInto(writeChannel, callback).get();
       fail("ByteBufferReadableStreamChannel has been closed, so read should have thrown ClosedChannelException");
     } catch (ExecutionException e) {
       Exception exception = (Exception) Utils.getRootCause(e);
@@ -125,65 +163,18 @@ public class ByteBufferReadableStreamChannelTest {
   }
 
   /**
-   * Tests behavior of read operations on some corner cases.
-   * <p/>
-   * Corner case list:
-   * 1. Blob size is 0.
-   * @throws Exception
-   */
-  @Test
-  public void readAndWriteCornerCasesTest() throws Exception {
-    // 0 sized blob.
-    ByteBufferReadableStreamChannel readableStreamChannel = new ByteBufferReadableStreamChannel(ByteBuffer.allocate(0));
-    assertTrue("ByteBufferReadableStreamChannel is not open", readableStreamChannel.isOpen());
-    assertEquals("Size returned by ByteBufferReadableStreamChannel is not 0", 0, readableStreamChannel.getSize());
-    ByteBufferAsyncWritableChannel writeChannel = new ByteBufferAsyncWritableChannel();
-    ReadIntoCallback callback = new ReadIntoCallback();
-    Future<Long> future = readableStreamChannel.readInto(writeChannel, callback);
-    ByteBuffer chunk = writeChannel.getNextChunk(0);
-    while (chunk != null) {
-      writeChannel.resolveOldestChunk(null);
-      chunk = writeChannel.getNextChunk(0);
-    }
-    callback.awaitCallback();
-    assertEquals("There should have no bytes to read (future)", 0, future.get().longValue());
-    assertEquals("There should have no bytes to read (callback)", 0, callback.bytesRead);
-    if (callback.exception != null) {
-      throw callback.exception;
-    }
-    writeChannel.close();
-    readableStreamChannel.close();
-  }
-
-  /**
    * Tests that no exceptions are thrown on repeating idempotent operations. Does <b><i>not</i></b> currently test that
    * state changes are idempotent.
    * @throws IOException
    */
   @Test
   public void idempotentOperationsTest() throws IOException {
-    byte[] in = fillRandomBytes(new byte[1]);
-    ByteBufferReadableStreamChannel byteBufferReadableStreamChannel =
-        new ByteBufferReadableStreamChannel(ByteBuffer.wrap(in));
     assertTrue("ByteBufferReadableStreamChannel is not open", byteBufferReadableStreamChannel.isOpen());
     byteBufferReadableStreamChannel.close();
     assertFalse("ByteBufferReadableStreamChannel is not closed", byteBufferReadableStreamChannel.isOpen());
     // should not throw exception.
     byteBufferReadableStreamChannel.close();
     assertFalse("ByteBufferReadableStreamChannel is not closed", byteBufferReadableStreamChannel.isOpen());
-  }
-
-  // helpers
-  // general
-
-  /**
-   * Fills random bytes into {@code in}.
-   * @param in the byte array that needs to be filled with random bytes.
-   * @return {@code in} filled with random bytes.
-   */
-  private byte[] fillRandomBytes(byte[] in) {
-    new Random().nextBytes(in);
-    return in;
   }
 }
 
