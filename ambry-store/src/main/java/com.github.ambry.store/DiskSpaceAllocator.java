@@ -289,7 +289,7 @@ class DiskSpaceAllocator {
       } else {
         while (reserveFiles.getCount(sizeInBytes) > segmentsNeeded) {
           File fileToDelete = reserveFiles.remove(sizeInBytes);
-          if (fileToDelete != null && !fileToDelete.delete()) {
+          if (!fileToDelete.delete()) {
             throw new IOException("Could not delete the following reserve file: " + fileToDelete.getAbsolutePath());
           }
         }
