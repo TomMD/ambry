@@ -19,6 +19,11 @@ apply from: file('gradle/license.gradle')
 apply from: file('gradle/environment.gradle')
 apply from: file("gradle/dependency-versions.gradle")
 
+
+if( Boolean.parseBoolean(getProperty("MuseErrorprone")) == true ){
+    apply from: file("gradle/errorprone.gradle"), to: allprojects
+}
+
 allprojects {
     group = "com.github.ambry"
 
@@ -31,6 +36,7 @@ allprojects {
         mavenCentral()
         mavenLocal()
     }
+
 }
 
 subprojects {

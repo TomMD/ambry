@@ -18,4 +18,5 @@ repositories {
 
 dependencies {
     classpath "gradle.plugin.nl.javadude.gradle.plugins:license-gradle-plugin:0.12.1"
+    classpath "net.ltgt.gradle:gradle-errorprone-plugin:0.0.16"
 }

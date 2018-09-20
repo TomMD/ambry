@@ -1,0 +1,11 @@
+apply plugin: "net.ltgt.errorprone"
+
+tasks.withType(JavaCompile) {
+    configure(options) {
+        compilerArgs << "-XepAllErrorsAsWarnings"
+    }
+}
+
+configurations.errorprone {
+    resolutionStrategy.force "com.google.errorprone:error_prone_core:2.3.1"
+}
